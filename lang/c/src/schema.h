@@ -80,6 +80,13 @@ struct avro_int64_schema_t {
 	int adjust_to_utc;
 };
 
+struct avro_bytes_schema_t {
+	struct avro_obj_t obj;
+	char *logical_type;
+	int32_t precision;
+	int32_t scale;
+};
+
 struct avro_fixed_schema_t {
 	struct avro_obj_t obj;
 	const char *name;
@@ -104,5 +111,6 @@ struct avro_link_schema_t {
 #define avro_schema_to_link(schema_)    (container_of(schema_, struct avro_link_schema_t, obj))
 #define avro_schema_to_int32(schema_)   (container_of(schema_, struct avro_int32_schema_t, obj))
 #define avro_schema_to_int64(schema_)   (container_of(schema_, struct avro_int64_schema_t, obj))
+#define avro_schema_to_bytes(schema_)   (container_of(schema_, struct avro_bytes_schema_t, obj))
 
 #endif
