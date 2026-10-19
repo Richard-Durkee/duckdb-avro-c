@@ -1289,6 +1289,15 @@ int avro_file_writer_close(avro_file_writer_t w)
 {
 	int rval;
 	check(rval, avro_file_writer_flush(w));
+	avro_file_writer_free(w);
+	return 0;
+}
+
+void avro_file_writer_free(avro_file_writer_t w)
+{
+	if (!w) {
+		return;
+	}
 	avro_schema_decref(w->writers_schema);
 	avro_writer_free(w->datum_writer);
 	avro_writer_free(w->writer);
@@ -1296,7 +1305,6 @@ int avro_file_writer_close(avro_file_writer_t w)
 	avro_codec_reset(w->codec);
 	avro_freet(struct avro_codec_t_, w->codec);
 	avro_freet(struct avro_file_writer_t_, w);
-	return 0;
 }
 
 int avro_file_reader_read(avro_file_reader_t r, avro_schema_t readers_schema,
