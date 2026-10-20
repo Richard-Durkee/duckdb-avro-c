@@ -187,7 +187,12 @@ int avro_file_block_reader_close(avro_file_block_reader_t block_reader);
 
 int avro_file_writer_sync(avro_file_writer_t writer);
 int avro_file_writer_flush(avro_file_writer_t writer);
+/* Flush and release a writer. On a flush error the writer remains valid for
+ * retrying the flush, or can be discarded with avro_file_writer_free. */
 int avro_file_writer_close(avro_file_writer_t writer);
+/* Release a writer without flushing pending Avro blocks. Safe to use after a failed
+ * flush or while cancelling a write. Accepts NULL. */
+void avro_file_writer_free(avro_file_writer_t writer);
 
 int avro_file_reader_close(avro_file_reader_t reader);
 
