@@ -268,6 +268,38 @@ static int test_union(void)
 	return 0;
 }
 
+static int test_bytes_logical_type(void)
+{
+	const char *json = "{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":10,\"scale\":2}";
+	avro_schema_t schema = NULL;
+	if (avro_schema_from_json_length(json, strlen(json), &schema)) {
+		fprintf(stderr, "failed to parse bytes decimal schema (%s)\n", avro_strerror());
+		exit(EXIT_FAILURE);
+	}
+	const char *logical_type = avro_schema_logical_type(schema);
+	if (!logical_type || strcmp(logical_type, "decimal") != 0 || avro_schema_precision(schema) != 10 ||
+	    avro_schema_scale(schema) != 2) {
+		fprintf(stderr, "bytes decimal schema lost its logical type, precision or scale\n");
+		exit(EXIT_FAILURE);
+	}
+	avro_schema_t copy = avro_schema_copy(schema);
+	if (!avro_schema_equal(schema, copy) || avro_schema_precision(copy) != 10 || avro_schema_scale(copy) != 2) {
+		fprintf(stderr, "copy of a bytes decimal schema differs\n");
+		exit(EXIT_FAILURE);
+	}
+	avro_schema_t other_scale = NULL;
+	const char *json_other = "{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":10,\"scale\":3}";
+	if (avro_schema_from_json_length(json_other, strlen(json_other), &other_scale) ||
+	    avro_schema_equal(schema, other_scale) || avro_schema_equal(schema, avro_schema_bytes())) {
+		fprintf(stderr, "bytes decimals with different scales or no logical type compare equal\n");
+		exit(EXIT_FAILURE);
+	}
+	avro_schema_decref(other_scale);
+	avro_schema_decref(copy);
+	avro_schema_decref(schema);
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	char *srcdir = getenv("srcdir");
@@ -304,6 +336,8 @@ int main(int argc, char *argv[])
 	test_record();
 	fprintf(stderr, "*** Running union tests **\n");
 	test_union();
+	fprintf(stderr, "*** Running bytes logical type tests **\n");
+	test_bytes_logical_type();
 
 	fprintf(stderr, "==================================================\n");
 	fprintf(stderr,

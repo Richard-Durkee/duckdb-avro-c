@@ -205,6 +205,11 @@ int avro_schema_equal(avro_schema_t a, avro_schema_t b)
 	} else if (is_avro_int64(a)) {
 		return nullstrcmp(avro_schema_to_int64(a)->logical_type,
 				  avro_schema_to_int64(b)->logical_type) == 0;
+	} else if (is_avro_bytes(a)) {
+		const struct avro_bytes_schema_t *sa = avro_schema_to_bytes(a);
+		const struct avro_bytes_schema_t *sb = avro_schema_to_bytes(b);
+		return nullstrcmp(sa->logical_type, sb->logical_type) == 0 &&
+		       sa->precision == sb->precision && sa->scale == sb->scale;
 	}
 	return 1;
 }

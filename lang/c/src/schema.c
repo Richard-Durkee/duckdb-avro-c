@@ -119,13 +119,21 @@ static void avro_schema_free(avro_schema_t schema)
 	if (is_avro_schema(schema)) {
 		switch (avro_typeof(schema)) {
 		case AVRO_STRING:
-		case AVRO_BYTES:
 		case AVRO_FLOAT:
 		case AVRO_DOUBLE:
 		case AVRO_BOOLEAN:
 		case AVRO_NULL:
 			/* no memory allocated for primitives */
 			return;
+
+		case AVRO_BYTES:{
+				struct avro_bytes_schema_t *s = avro_schema_to_bytes(schema);
+				if (s->logical_type) {
+					avro_str_free(s->logical_type);
+					avro_freet(struct avro_bytes_schema_t, s);
+				}
+				return;
+			}
 
 		case AVRO_INT32:{
 				struct avro_int32_schema_t *s = avro_schema_to_int32(schema);
@@ -265,12 +273,23 @@ avro_schema_t avro_schema_string(void)
 
 avro_schema_t avro_schema_bytes(void)
 {
-	static struct avro_obj_t obj = {
-		AVRO_BYTES,
-		AVRO_SCHEMA,
-		1
-	};
-	return avro_schema_incref(&obj);
+	static struct avro_bytes_schema_t obj = { {AVRO_BYTES, AVRO_SCHEMA, 1}, NULL, -1, -1 };
+	return avro_schema_incref(&obj.obj);
+}
+
+static avro_schema_t avro_schema_bytes_with_logical_type(const char *logical_type,
+                                                          int32_t precision, int32_t scale)
+{
+	struct avro_bytes_schema_t *s = (struct avro_bytes_schema_t *) avro_new(struct avro_bytes_schema_t);
+	if (!s) {
+		avro_set_error("Cannot allocate new bytes schema");
+		return NULL;
+	}
+	s->logical_type = avro_strdup(logical_type);
+	s->precision = precision;
+	s->scale = scale;
+	avro_schema_init(&s->obj, AVRO_BYTES);
+	return &s->obj;
 }
 
 avro_schema_t avro_schema_int(void)
@@ -550,6 +569,8 @@ const char *avro_schema_logical_type(avro_schema_t schema)
 		return avro_schema_to_int32(schema)->logical_type;
 	case AVRO_INT64:
 		return avro_schema_to_int64(schema)->logical_type;
+	case AVRO_BYTES:
+		return avro_schema_to_bytes(schema)->logical_type;
 	case AVRO_FIXED:
 		return avro_schema_to_fixed(schema)->logical_type;
 	case AVRO_ARRAY:
@@ -569,6 +590,9 @@ int avro_schema_adjust_to_utc(avro_schema_t schema)
 
 int32_t avro_schema_precision(avro_schema_t schema)
 {
+	if (is_avro_bytes(schema)) {
+		return avro_schema_to_bytes(schema)->precision;
+	}
 	if (!schema || !is_avro_fixed(schema)) {
 		return 0;
 	}
@@ -577,6 +601,9 @@ int32_t avro_schema_precision(avro_schema_t schema)
 
 int32_t avro_schema_scale(avro_schema_t schema)
 {
+	if (is_avro_bytes(schema)) {
+		return avro_schema_to_bytes(schema)->scale;
+	}
 	if (!schema || !is_avro_fixed(schema)) {
 		return 0;
 	}
@@ -1057,7 +1084,15 @@ avro_schema_from_json_t(json_t *json, avro_schema_t *schema,
 		break;
 
 	case AVRO_BYTES:
-		*schema = avro_schema_bytes();
+		{
+			json_t *json_lt        = json_object_get(json, "logicalType");
+			json_t *json_precision = json_object_get(json, "precision");
+			json_t *json_scale     = json_object_get(json, "scale");
+			const char *lt = json_lt ? json_string_value(json_lt) : NULL;
+			int32_t precision = json_precision ? (int32_t) json_integer_value(json_precision) : -1;
+			int32_t scale     = json_scale     ? (int32_t) json_integer_value(json_scale)     : -1;
+			*schema = lt ? avro_schema_bytes_with_logical_type(lt, precision, scale) : avro_schema_bytes();
+		}
 		break;
 
 	case AVRO_INT32:
@@ -1509,7 +1544,6 @@ avro_schema_t avro_schema_copy_root(avro_schema_t schema, st_table *named_schema
 	}
 	switch (avro_typeof(schema)) {
 	case AVRO_STRING:
-	case AVRO_BYTES:
 	case AVRO_FLOAT:
 	case AVRO_DOUBLE:
 	case AVRO_BOOLEAN:
@@ -1518,6 +1552,15 @@ avro_schema_t avro_schema_copy_root(avro_schema_t schema, st_table *named_schema
 		 * No need to copy primitives since they're static
 		 */
 		new_schema = schema;
+		break;
+
+	case AVRO_BYTES:
+		{
+			struct avro_bytes_schema_t *s = avro_schema_to_bytes(schema);
+			new_schema = s->logical_type
+			    ? avro_schema_bytes_with_logical_type(s->logical_type, s->precision, s->scale)
+			    : schema;
+		}
 		break;
 
 	case AVRO_INT32:
@@ -2172,6 +2215,20 @@ avro_schema_to_json2(const avro_schema_t schema, avro_writer_t out,
 			check(rval, avro_write_str(out, ",\"logicalType\":\""));
 			check(rval, avro_write_str(out, lt));
 			check(rval, avro_write_str(out, "\""));
+		}
+		if (is_avro_bytes(schema)) {
+			struct avro_bytes_schema_t *s = avro_schema_to_bytes(schema);
+			char num[16];
+			if (s->precision != -1) {
+				check(rval, avro_write_str(out, ",\"precision\":"));
+				snprintf(num, sizeof(num), "%" PRId32, s->precision);
+				check(rval, avro_write_str(out, num));
+			}
+			if (s->scale != -1) {
+				check(rval, avro_write_str(out, ",\"scale\":"));
+				snprintf(num, sizeof(num), "%" PRId32, s->scale);
+				check(rval, avro_write_str(out, num));
+			}
 		}
 		if (is_avro_int64(schema)) {
 			struct avro_int64_schema_t *s = avro_schema_to_int64(schema);
