@@ -30,7 +30,9 @@ enum avro_codec_type_t {
 	AVRO_CODEC_NULL,
 	AVRO_CODEC_DEFLATE,
 	AVRO_CODEC_LZMA,
-	AVRO_CODEC_SNAPPY
+	AVRO_CODEC_SNAPPY,
+	AVRO_CODEC_ZSTANDARD,
+	AVRO_CODEC_BZIP2
 };
 typedef enum avro_codec_type_t avro_codec_type_t;
 

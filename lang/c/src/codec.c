@@ -15,6 +15,7 @@
  * permissions and limitations under the License. 
  */
 
+#include <limits.h>
 #include <string.h>
 #ifdef SNAPPY_CODEC
 #include <snappy-c.h>
@@ -36,6 +37,12 @@
 #endif
 #ifdef LZMA_CODEC
 #include <lzma.h>
+#endif
+#ifdef ZSTANDARD_CODEC
+#include <zstd.h>
+#endif
+#ifdef BZIP2_CODEC
+#include <bzlib.h>
 #endif
 #include "avro/errors.h"
 #include "avro/allocation.h"
@@ -516,6 +523,239 @@ static int reset_lzma(avro_codec_t c)
 
 #endif // LZMA_CODEC
 
+/* Zstandard codec */
+
+#ifdef ZSTANDARD_CODEC
+
+static int
+codec_zstandard(avro_codec_t codec)
+{
+	codec->name = "zstandard";
+	codec->type = AVRO_CODEC_ZSTANDARD;
+	codec->block_size = 0;
+	codec->used_size = 0;
+	codec->block_data = NULL;
+	codec->codec_data = ZSTD_createDCtx();
+
+	if (!codec->codec_data) {
+		avro_set_error("Cannot allocate memory for zstandard");
+		return 1;
+	}
+
+	return 0;
+}
+
+static int encode_zstandard(avro_codec_t c, void * data, int64_t len)
+{
+	size_t outlen = ZSTD_compressBound(len);
+	size_t written;
+
+	if (!c->block_data) {
+		c->block_data = avro_malloc(outlen);
+		c->block_size = outlen;
+	} else if (c->block_size < (int64_t) outlen) {
+		c->block_data = avro_realloc(c->block_data, c->block_size, outlen);
+		c->block_size = outlen;
+	}
+
+	if (!c->block_data) {
+		avro_set_error("Cannot allocate memory for zstandard");
+		return 1;
+	}
+
+	written = ZSTD_compress(c->block_data, c->block_size, data, len, ZSTD_CLEVEL_DEFAULT);
+	if (ZSTD_isError(written)) {
+		avro_set_error("Error compressing block with zstandard: %s", ZSTD_getErrorName(written));
+		return 1;
+	}
+
+	c->used_size = written;
+
+	return 0;
+}
+
+static int decode_zstandard(avro_codec_t c, void * data, int64_t len)
+{
+	ZSTD_DCtx *dctx = (ZSTD_DCtx *) c->codec_data;
+	ZSTD_inBuffer in = { data, (size_t) len, 0 };
+	size_t written = 0;
+	size_t ret;
+
+	if (len == 0) {
+		c->used_size = 0;
+		return 0;
+	}
+
+	ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+
+	if (!c->block_data) {
+		c->block_data = avro_malloc(DEFAULT_BLOCK_SIZE);
+		c->block_size = DEFAULT_BLOCK_SIZE;
+	}
+
+	/* Frames written by streaming encoders (e.g. Java's) do not record their content size, so the output grows as
+	 * needed, and a block may hold several concatenated frames */
+	for (;;) {
+		if (!c->block_data) {
+			avro_set_error("Cannot allocate memory for zstandard");
+			return 1;
+		}
+		if ((int64_t) written == c->block_size) {
+			c->block_data = avro_realloc(c->block_data, c->block_size, c->block_size * 2);
+			c->block_size = c->block_size * 2;
+			continue;
+		}
+
+		ZSTD_outBuffer out = { c->block_data, (size_t) c->block_size, written };
+		ret = ZSTD_decompressStream(dctx, &out, &in);
+		if (ZSTD_isError(ret)) {
+			avro_set_error("Error uncompressing block with zstandard: %s", ZSTD_getErrorName(ret));
+			return 1;
+		}
+		written = out.pos;
+
+		if (in.pos == in.size && ret == 0) {
+			break;
+		}
+		if (in.pos == in.size && out.pos < out.size) {
+			avro_set_error("Truncated zstandard block");
+			return 1;
+		}
+	}
+
+	c->used_size = written;
+
+	return 0;
+}
+
+static int reset_zstandard(avro_codec_t c)
+{
+	if (c->block_data) {
+		avro_free(c->block_data, c->block_size);
+	}
+	if (c->codec_data) {
+		ZSTD_freeDCtx((ZSTD_DCtx *) c->codec_data);
+	}
+
+	c->block_data = NULL;
+	c->block_size = 0;
+	c->used_size = 0;
+	c->codec_data = NULL;
+
+	return 0;
+}
+
+#endif // ZSTANDARD_CODEC
+
+/* Bzip2 codec */
+
+#ifdef BZIP2_CODEC
+
+static int
+codec_bzip2(avro_codec_t codec)
+{
+	codec->name = "bzip2";
+	codec->type = AVRO_CODEC_BZIP2;
+	codec->block_size = 0;
+	codec->used_size = 0;
+	codec->block_data = NULL;
+	codec->codec_data = NULL;
+
+	return 0;
+}
+
+static int encode_bzip2(avro_codec_t c, void * data, int64_t len)
+{
+	/* bzip2's documented worst case: 1% larger than the input plus 600 bytes */
+	int64_t outlen = len + len / 100 + 600;
+	unsigned int written;
+	int ret;
+
+	if (len > (int64_t) UINT_MAX || outlen > (int64_t) UINT_MAX) {
+		avro_set_error("Block too large for bzip2");
+		return 1;
+	}
+
+	if (!c->block_data) {
+		c->block_data = avro_malloc(outlen);
+		c->block_size = outlen;
+	} else if (c->block_size < outlen) {
+		c->block_data = avro_realloc(c->block_data, c->block_size, outlen);
+		c->block_size = outlen;
+	}
+
+	if (!c->block_data) {
+		avro_set_error("Cannot allocate memory for bzip2");
+		return 1;
+	}
+
+	written = (unsigned int) c->block_size;
+	ret = BZ2_bzBuffToBuffCompress((char *) c->block_data, &written, (char *) data, (unsigned int) len, 9, 0, 0);
+	if (ret != BZ_OK) {
+		avro_set_error("Error compressing block with bzip2: %d", ret);
+		return 1;
+	}
+
+	c->used_size = written;
+
+	return 0;
+}
+
+static int decode_bzip2(avro_codec_t c, void * data, int64_t len)
+{
+	unsigned int written;
+	int ret;
+
+	if (len > (int64_t) UINT_MAX) {
+		avro_set_error("Block too large for bzip2");
+		return 1;
+	}
+
+	if (!c->block_data) {
+		c->block_data = avro_malloc(DEFAULT_BLOCK_SIZE);
+		c->block_size = DEFAULT_BLOCK_SIZE;
+	}
+
+	for (;;) {
+		if (!c->block_data || c->block_size > (int64_t) UINT_MAX) {
+			avro_set_error("Cannot allocate memory for bzip2");
+			return 1;
+		}
+		written = (unsigned int) c->block_size;
+		ret = BZ2_bzBuffToBuffDecompress((char *) c->block_data, &written, (char *) data, (unsigned int) len, 0, 0);
+		if (ret != BZ_OUTBUFF_FULL) {
+			break;
+		}
+		c->block_data = avro_realloc(c->block_data, c->block_size, c->block_size * 2);
+		c->block_size = c->block_size * 2;
+	}
+
+	if (ret != BZ_OK) {
+		avro_set_error("Error uncompressing block with bzip2: %d", ret);
+		return 1;
+	}
+
+	c->used_size = written;
+
+	return 0;
+}
+
+static int reset_bzip2(avro_codec_t c)
+{
+	if (c->block_data) {
+		avro_free(c->block_data, c->block_size);
+	}
+
+	c->block_data = NULL;
+	c->block_size = 0;
+	c->used_size = 0;
+	c->codec_data = NULL;
+
+	return 0;
+}
+
+#endif // BZIP2_CODEC
+
 /* Common interface */
 
 int avro_codec(avro_codec_t codec, const char *type)
@@ -539,6 +779,18 @@ int avro_codec(avro_codec_t codec, const char *type)
 #ifdef LZMA_CODEC
 	if (strcmp("lzma", type) == 0) {
 		return codec_lzma(codec);
+	}
+#endif
+
+#ifdef ZSTANDARD_CODEC
+	if (strcmp("zstandard", type) == 0) {
+		return codec_zstandard(codec);
+	}
+#endif
+
+#ifdef BZIP2_CODEC
+	if (strcmp("bzip2", type) == 0) {
+		return codec_bzip2(codec);
 	}
 #endif
 
@@ -568,6 +820,14 @@ int avro_codec_encode(avro_codec_t c, void * data, int64_t len)
 	case AVRO_CODEC_LZMA:
 		return encode_lzma(c, data, len);
 #endif
+#ifdef ZSTANDARD_CODEC
+	case AVRO_CODEC_ZSTANDARD:
+		return encode_zstandard(c, data, len);
+#endif
+#ifdef BZIP2_CODEC
+	case AVRO_CODEC_BZIP2:
+		return encode_bzip2(c, data, len);
+#endif
 	default:
 		return 1;
 	}
@@ -591,6 +851,14 @@ int avro_codec_decode(avro_codec_t c, void * data, int64_t len)
 	case AVRO_CODEC_LZMA:
 		return decode_lzma(c, data, len);
 #endif
+#ifdef ZSTANDARD_CODEC
+	case AVRO_CODEC_ZSTANDARD:
+		return decode_zstandard(c, data, len);
+#endif
+#ifdef BZIP2_CODEC
+	case AVRO_CODEC_BZIP2:
+		return decode_bzip2(c, data, len);
+#endif
 	default:
 		return 1;
 	}
@@ -613,6 +881,14 @@ int avro_codec_reset(avro_codec_t c)
 #ifdef LZMA_CODEC
 	case AVRO_CODEC_LZMA:
 		return reset_lzma(c);
+#endif
+#ifdef ZSTANDARD_CODEC
+	case AVRO_CODEC_ZSTANDARD:
+		return reset_zstandard(c);
+#endif
+#ifdef BZIP2_CODEC
+	case AVRO_CODEC_BZIP2:
+		return reset_bzip2(c);
 #endif
 	default:
 		return 1;
